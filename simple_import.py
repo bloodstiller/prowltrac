@@ -38,6 +38,7 @@ from src.ocsf_parser import OCSFParser
 from src.auth.auth_handler import AuthHandler
 from src.plextrac_client import PlexTracClient
 from src.filters import FilterEngine
+from src.utils.cloud import asset_label_for_provider
 
 
 class ProwlerCLIImporter:
@@ -181,19 +182,20 @@ class ProwlerCLIImporter:
         
         # Pre-create assets
         print("🔄 Analyzing and creating assets...")
-        unique_assets = set()
-        
+        unique_assets = {}  # account_uid -> cloud_provider
+
         for ocsf_finding in self.filtered_findings:
             if ocsf_finding.cloud_account_uid:
-                unique_assets.add(ocsf_finding.cloud_account_uid)
-        
+                unique_assets[ocsf_finding.cloud_account_uid] = ocsf_finding.cloud_provider
+
         asset_mapping = {}
         if unique_assets:
-            for i, account_uid in enumerate(unique_assets, 1):
+            for i, (account_uid, cloud_provider) in enumerate(unique_assets.items(), 1):
                 try:
-                    asset_name = f"AWS Account {account_uid}"
+                    asset_label = asset_label_for_provider(cloud_provider)
+                    asset_name = f"{asset_label} {account_uid}"
                     asset = self.plextrac_client.api.get_or_create_asset(
-                        client_id, asset_name, "AWS Account", f"AWS Account ID: {account_uid}"
+                        client_id, asset_name, asset_label, f"{asset_label} ID: {account_uid}"
                     )
                     asset_mapping[account_uid] = asset.id
                     print(f"  [{i}/{len(unique_assets)}] {asset_name} -> {asset.id}")
@@ -274,8 +276,9 @@ class ProwlerCLIImporter:
             affected_assets = {}
             if ocsf_finding.cloud_account_uid and ocsf_finding.cloud_account_uid in asset_mapping:
                 asset_id = asset_mapping[ocsf_finding.cloud_account_uid]
-                asset_name = f"AWS Account {ocsf_finding.cloud_account_uid}"
-                
+                asset_label = asset_label_for_provider(ocsf_finding.cloud_provider)
+                asset_name = f"{asset_label} {ocsf_finding.cloud_account_uid}"
+
                 affected_assets[asset_id] = {
                     "id": asset_id,
                     "asset": asset_name,

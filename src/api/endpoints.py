@@ -434,7 +434,7 @@ class PlexTracAPI:
             # Use the exact PlexTrac API structure from docs
             payload = {
                 "asset": asset.name,
-                "description": asset.description or f"AWS Account: {asset.name}",
+                "description": asset.description or f"{asset.asset_type}: {asset.name}",
                 "doc_type": "client_asset",
                 "type": asset.asset_type,
                 "knownIps": asset.ip_addresses,
@@ -485,7 +485,7 @@ class PlexTracAPI:
         self,
         client_id: str,
         asset_name: str,
-        asset_type: str = "AWS Account",
+        asset_type: str = "Cloud Account",
         description: str = None,
     ) -> Asset:
         """Get existing asset or create new one."""

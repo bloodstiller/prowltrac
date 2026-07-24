@@ -8,7 +8,7 @@ A comprehensive tool for importing [Prowler](https://prowler.com/) security find
 
 - **Full OCSF Support**: Parses Prowler OCSF JSON files with proper field mapping
 - **Advanced Filtering**: Filter by severity (Critical/High/Medium/Low), status (FAIL/PASS), and combinations
-- **Smart Asset Management**: Automatically creates and maps AWS account assets
+- **Smart Asset Management**: Automatically creates and maps cloud account assets (AWS, Azure, GCP)
 - **Duplicate Handling**: Detects and gracefully handles duplicate findings
 - **Clean Data Extraction**: Properly extracts recommendations and references from OCSF data
 - **Two Interfaces**: Menu-driven interactive mode and CLI mode for automation
@@ -185,15 +185,15 @@ import:
 | `message` | `title` | Primary finding title |
 | `severity_id` | `severity` | 1=Critical, 2=High, 3=Medium, 4=Low, 5=Informational |
 | `status_code` | Used for filtering | FAIL/PASS/UNKNOWN |
-| `cloud.account.uid` | `affected_assets` | Auto-creates AWS account assets |
+| `cloud.account.uid` | `affected_assets` | Auto-creates cloud account assets (labeled by `cloud.provider`) |
 | `remediation.desc` | `recommendation` | Clean text extraction |
 | `references` | `references` | URL extraction and deduplication |
 
 ### Asset Management
 
 The tool automatically:
-- Identifies unique AWS account UIDs from findings
-- Creates PlexTrac assets for each account
+- Identifies unique cloud account UIDs from findings (AWS, Azure, GCP)
+- Creates PlexTrac assets for each account, labeled by cloud provider (e.g. "AWS Account", "Azure Subscription", "GCP Project")
 - Maps findings to their respective assets
 - Handles asset creation failures gracefully
 
