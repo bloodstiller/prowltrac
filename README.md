@@ -82,6 +82,7 @@ python simple_import.py <ocsf-file> [options]
 --username USERNAME      PlexTrac username  
 --password PASSWORD      PlexTrac password
 --mfa-token TOKEN        MFA token
+--token TOKEN            PlexTrac API bearer token (takes precedence over --username/--password)
 ```
 
 ### Import Options
@@ -147,9 +148,16 @@ export PLEXTRAC_URL="https://yourapp.plextrac.com"
 export PLEXTRAC_USERNAME="your-username" 
 export PLEXTRAC_PASSWORD="your-password"
 export PLEXTRAC_MFA_TOKEN="123456"          # Optional
+export PLEXTRAC_API_TOKEN="your-bearer-token" # Optional - takes precedence over username/password
 export LOG_LEVEL="INFO"                      # DEBUG, INFO, WARNING, ERROR
 export LOG_FILE="prowltrac.log"             # Log file path
 ```
+
+> **Bearer token authentication**: if `PLEXTRAC_API_TOKEN` (or `--token`) is set, it is
+> used directly and the username/password login step is skipped entirely. PlexTrac
+> bearer tokens expire after 15 minutes and, since there are no credentials to silently
+> re-authenticate with, an expired token will cause a clear authentication error rather
+> than an automatic retry — supply a fresh token if that happens.
 
 ### Config File
 

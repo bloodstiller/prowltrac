@@ -13,7 +13,7 @@ from urllib3.util.retry import Retry
 
 from ..utils.config import get_config, get_credentials
 from ..utils.logger import get_logger
-from ..utils.validators import validate_credentials
+from ..utils.validators import validate_credentials, validate_token
 from .interactive_login import interactive_login
 from .token_cache import token_cache
 
@@ -43,6 +43,7 @@ class AuthHandler:
         self.plextrac_url: Optional[str] = None
         self.user_info: Optional[Dict[str, Any]] = None
         self.tenant_id: Optional[str] = None
+        self.auth_method: Optional[str] = None
 
         # HTTP session with retry strategy
         self.session = requests.Session()
@@ -75,12 +76,19 @@ class AuthHandler:
         mfa_token: Optional[str] = None,
         url: Optional[str] = None,
         force_new: bool = False,
+        token: Optional[str] = None,
     ) -> bool:
         """Authenticate with PlexTrac API using cached tokens when possible."""
 
         self.logger.debug(
             f"Starting authentication - interactive: {self.interactive}, use_cache: {self.use_cache}, force_new: {force_new}"
         )
+
+        # A directly-supplied bearer token takes precedence over username/password
+        token = token or get_credentials().get("token")
+        if token:
+            self.logger.debug("Bearer token supplied, skipping username/password login")
+            return self.authenticate_with_token(token, url)
 
         # Determine PlexTrac URL
         self.plextrac_url = url or self.config.plextrac.url
@@ -150,6 +158,7 @@ class AuthHandler:
             self.token = token
             self.authenticated_user = username
             self.plextrac_url = url
+            self.auth_method = "password"
 
             # Decode token to get expiry (basic JWT decode)
             self.token_expiry = datetime.now() + timedelta(minutes=15)  # Assume 15 min expiry
@@ -281,6 +290,7 @@ class AuthHandler:
                 # Set token expiry (15 minutes from now)
                 self.token_expiry = datetime.now() + timedelta(minutes=15)
                 self.authenticated_user = username
+                self.auth_method = "password"
 
                 # Update session headers
                 self.session.headers.update(
@@ -342,9 +352,66 @@ class AuthHandler:
             self.logger.error(f"Authentication error: {str(e)}")
             raise AuthenticationError(f"Authentication failed: {str(e)}")
 
+    def authenticate_with_token(self, token: str, url: Optional[str] = None) -> bool:
+        """Authenticate using a directly-supplied bearer token (skips username/password login).
+
+        The token's expiry is unknown and unmanaged by this tool, so no expiry-based
+        refresh is attempted here — a 401 on a later request surfaces as an
+        AuthenticationError telling the caller to supply a fresh token.
+        """
+        self.plextrac_url = url or self.config.plextrac.url
+
+        validation = validate_token(token, self.plextrac_url)
+        if not validation["valid"]:
+            raise AuthenticationError(f"Invalid token: {', '.join(validation['errors'])}")
+
+        self.token = token
+        self.token_expiry = None
+        self.auth_method = "token"
+        self.authenticated_user = None
+        self.tenant_id = None
+
+        # Update session headers
+        self.session.headers.update(
+            {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"}
+        )
+
+        self.logger.info("Validating supplied bearer token")
+        try:
+            self.user_info = self.get_current_user()
+        except Exception as e:
+            self.logger.debug(f"Token validation request failed: {e}")
+            self.user_info = None
+
+        if self.user_info:
+            self.authenticated_user = self.user_info.get("username")
+            if "tenant_id" in self.user_info:
+                self.tenant_id = self.user_info["tenant_id"]
+        else:
+            self.token = None
+            self.token_expiry = None
+            self.auth_method = None
+            if "Authorization" in self.session.headers:
+                del self.session.headers["Authorization"]
+            raise AuthenticationError(
+                "Invalid or expired bearer token. Supply a fresh token via --token or "
+                "PLEXTRAC_API_TOKEN."
+            )
+
+        self.logger.info("Successfully authenticated with bearer token")
+        return True
+
     def is_authenticated(self) -> bool:
         """Check if currently authenticated with valid token."""
-        if not self.token or not self.token_expiry:
+        if not self.token:
+            return False
+
+        # Bearer tokens supplied directly have no known expiry - trust them until
+        # a request comes back with a 401.
+        if self.auth_method == "token":
+            return True
+
+        if not self.token_expiry:
             return False
 
         # Check if token is expired (with 1 minute buffer)
@@ -354,6 +421,14 @@ class AuthHandler:
     def ensure_authenticated(self) -> None:
         """Ensure we have a valid authentication token."""
         if not self.is_authenticated():
+            # A directly-supplied bearer token can't be silently refreshed - there
+            # are no credentials to re-login with, so fail fast with a clear error.
+            if self.auth_method == "token":
+                raise AuthenticationError(
+                    "Bearer token is invalid or expired; supply a fresh token via "
+                    "--token or PLEXTRAC_API_TOKEN."
+                )
+
             self.logger.info("Token expired or missing, re-authenticating...")
 
             # If we have cached user info, try to re-authenticate with cache first
@@ -468,6 +543,7 @@ class AuthHandler:
         self.authenticated_user = None
         self.plextrac_url = None
         self.user_info = None
+        self.auth_method = None
 
         # Clear session headers
         if "Authorization" in self.session.headers:

@@ -96,36 +96,46 @@ class ProwlerCLIImporter:
         
         print(f"🔍 Filter '{filter_type}': {len(self.filtered_findings)} findings (was {original_count})")
     
-    def connect(self, url: str = None, username: str = None, password: str = None, mfa_token: str = None) -> bool:
+    def connect(self, url: str = None, username: str = None, password: str = None, mfa_token: str = None, token: str = None) -> bool:
         """Connect to PlexTrac."""
         try:
             # Get credentials from environment/config or parameters
             creds = get_credentials()
-            
-            # Override with provided parameters
-            auth_url = url or creds.get('username') and self.config.plextrac.url
-            auth_username = username or creds.get('username')
-            auth_password = password or creds.get('password')
-            auth_mfa = mfa_token or creds.get('mfa_token')
-            
-            # Prompt for missing credentials
-            if not auth_url:
-                auth_url = input("PlexTrac URL: ").strip()
-            if not auth_username:
-                auth_username = input("Username: ").strip()
-            if not auth_password:
-                auth_password = getpass.getpass("Password: ")
-            if not auth_mfa:
-                mfa_input = input("MFA Token (optional): ").strip()
-                auth_mfa = mfa_input if mfa_input else None
-            
-            print("🔄 Authenticating...")
-            success = self.auth_handler.authenticate(
-                username=auth_username,
-                password=auth_password,
-                mfa_token=auth_mfa,
-                url=auth_url
-            )
+
+            # A directly-supplied bearer token takes precedence over username/password
+            auth_token = token or creds.get('token')
+
+            auth_url = url or self.config.plextrac.url
+            if auth_token:
+                if not auth_url:
+                    auth_url = input("PlexTrac URL: ").strip()
+
+                print("🔄 Authenticating with bearer token...")
+                success = self.auth_handler.authenticate(token=auth_token, url=auth_url)
+            else:
+                # Override with provided parameters
+                auth_username = username or creds.get('username')
+                auth_password = password or creds.get('password')
+                auth_mfa = mfa_token or creds.get('mfa_token')
+
+                # Prompt for missing credentials
+                if not auth_url:
+                    auth_url = input("PlexTrac URL: ").strip()
+                if not auth_username:
+                    auth_username = input("Username: ").strip()
+                if not auth_password:
+                    auth_password = getpass.getpass("Password: ")
+                if not auth_mfa:
+                    mfa_input = input("MFA Token (optional): ").strip()
+                    auth_mfa = mfa_input if mfa_input else None
+
+                print("🔄 Authenticating...")
+                success = self.auth_handler.authenticate(
+                    username=auth_username,
+                    password=auth_password,
+                    mfa_token=auth_mfa,
+                    url=auth_url
+                )
             
             if success:
                 print("🔄 Loading client list...")
@@ -460,6 +470,7 @@ Examples:
     parser.add_argument('--username', help='PlexTrac username')
     parser.add_argument('--password', help='PlexTrac password')
     parser.add_argument('--mfa-token', help='MFA token')
+    parser.add_argument('--token', help='PlexTrac API bearer token (takes precedence over --username/--password)')
     
     # Import options
     parser.add_argument('--client-id', help='PlexTrac client ID (skip selection)')
@@ -525,7 +536,7 @@ Examples:
     
     # Connect to PlexTrac
     print("\n🔐 Connecting to PlexTrac...")
-    if not importer.connect(args.url, args.username, args.password, args.mfa_token):
+    if not importer.connect(args.url, args.username, args.password, args.mfa_token, args.token):
         print("❌ Failed to connect to PlexTrac")
         sys.exit(1)
     

@@ -167,6 +167,7 @@ class ConfigManager:
             "username": os.getenv("PLEXTRAC_USERNAME"),
             "password": os.getenv("PLEXTRAC_PASSWORD"),
             "mfa_token": os.getenv("PLEXTRAC_MFA_TOKEN"),
+            "token": os.getenv("PLEXTRAC_API_TOKEN"),
         }
 
     def get_filter_preset(self, preset_name: str) -> Optional[FilterPreset]:

@@ -337,35 +337,45 @@ class ProwlerImportMenu:
         
         # Get credentials from environment/config or prompt
         creds = get_credentials()
-        username = creds.get('username')
-        password = creds.get('password')
-        mfa_token = creds.get('mfa_token')
-        
-        # Prompt for missing credentials
-        if not username:
-            username = input("Username: ").strip()
-        else:
-            print(f"Username: {username}")
-            
-        if not password:
-            password = getpass.getpass("Password: ")
-        else:
-            print("Password: [from environment]")
-            
-        if not mfa_token:
-            mfa_input = input("MFA Token (optional): ").strip()
-            mfa_token = mfa_input if mfa_input else None
-        
+        token = creds.get('token')
+
         try:
-            print("🔄 Authenticating...")
-            
-            # Use our existing auth system
-            success = self.auth_handler.authenticate(
-                username=username,
-                password=password,
-                mfa_token=mfa_token,
-                url=self.config.plextrac.url
-            )
+            if token:
+                print("Bearer token: [from environment]")
+                print("🔄 Authenticating with bearer token...")
+                success = self.auth_handler.authenticate(
+                    token=token,
+                    url=self.config.plextrac.url
+                )
+            else:
+                username = creds.get('username')
+                password = creds.get('password')
+                mfa_token = creds.get('mfa_token')
+
+                # Prompt for missing credentials
+                if not username:
+                    username = input("Username: ").strip()
+                else:
+                    print(f"Username: {username}")
+
+                if not password:
+                    password = getpass.getpass("Password: ")
+                else:
+                    print("Password: [from environment]")
+
+                if not mfa_token:
+                    mfa_input = input("MFA Token (optional): ").strip()
+                    mfa_token = mfa_input if mfa_input else None
+
+                print("🔄 Authenticating...")
+
+                # Use our existing auth system
+                success = self.auth_handler.authenticate(
+                    username=username,
+                    password=password,
+                    mfa_token=mfa_token,
+                    url=self.config.plextrac.url
+                )
             
             if success:
                 # Create PlexTrac client with authenticated handler

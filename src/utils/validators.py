@@ -166,6 +166,20 @@ def validate_credentials(username: str, password: str, url: str) -> Dict[str, An
     return result
 
 
+def validate_token(token: str, url: str) -> Dict[str, Any]:
+    """Validate bearer token format."""
+    result = {"valid": True, "errors": []}
+
+    if not token or len(token.strip()) == 0:
+        result["errors"].append("Token is required")
+
+    if not validate_url(url):
+        result["errors"].append("Invalid URL format")
+
+    result["valid"] = len(result["errors"]) == 0
+    return result
+
+
 def validate_finding_data(finding: Dict[str, Any]) -> Dict[str, Any]:
     """Validate individual finding data structure."""
     result = {"valid": True, "errors": [], "warnings": []}
