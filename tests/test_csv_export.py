@@ -14,7 +14,7 @@ import pytest
 from src.converter import check_key
 from src.csv_export import CSV_COLUMNS, build_csv_rows, write_csv
 from src.ocsf_parser import OCSFParser
-from tests.test_ptrac import variant
+from tests.test_ptrac import reportable_checks, variant
 
 FIXTURE = Path(__file__).parent / "fixtures" / "sample_ocsf.json"
 # Copy of "PlexTrac Finding CSV Template v3.2.csv" as supplied by PlexTrac
@@ -72,7 +72,7 @@ def test_template_example_row_shape_is_reproducible():
 def test_rows_have_required_fields(findings, tmp_path):
     rows = read_rows(write_csv(findings, tmp_path / "out.csv"))
 
-    assert len(rows) == len({check_key(f) for f in findings})
+    assert len(rows) == len(reportable_checks(findings))
     for row in rows:
         assert row["title"]
         assert row["description"]
@@ -95,7 +95,7 @@ def test_one_row_per_check_with_all_resources(findings):
     row = dict(zip(CSV_COLUMNS, rows[0]))
     assert row["affected_assets"] == "arn:aws:s3:::bucket-a,arn:aws:s3:::bucket-b"
     assert "arn:aws:s3:::bucket-b: bucket-b is public" in row["description"]
-    assert "Affected Resources: 2" in row["description"]
+    assert "Failed Resources: 2" in row["description"]
 
 
 def test_resource_details_are_capped(findings):
@@ -120,9 +120,11 @@ def test_asset_names_with_commas_do_not_split(findings):
 
 
 def test_quotes_kept_and_newlines_flattened(findings, tmp_path):
-    tricky = variant(findings[0], uid="r1", title='Bucket "x", public\nread')
+    tricky = variant(findings[0], uid="res-1", message='Bucket res-1 "x", public\nread')
     rows = read_rows(write_csv([tricky], tmp_path / "t.csv"))
-    assert rows[0]["title"] == 'Bucket "x", public read'
+    assert rows[0]["title"] == 'Bucket "X", Public Read'
+    # Evidence itself is kept verbatim (only whitespace flattened for the single-line CSV)
+    assert 'res-1: Bucket res-1 "x", public read' in rows[0]["description"]
 
 
 class TestCli:

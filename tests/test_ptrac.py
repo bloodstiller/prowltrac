@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
-from src.converter import check_key, check_title
+from src.converter import check_key, check_title, prowler_status
 from src.ocsf_parser import OCSFParser
 from src.ptrac import build_ptrac, generate_flaw_id, validate_doc_version, write_ptrac
 
@@ -55,6 +55,11 @@ def variant(
     )
 
 
+def reportable_checks(findings):
+    """Checks that become PlexTrac findings: FAIL or MANUAL only, never PASS."""
+    return {check_key(f) for f in findings if prowler_status(f) in ("FAIL", "MANUAL")}
+
+
 @pytest.fixture
 def findings():
     return OCSFParser().parse_file(str(FIXTURE))
@@ -77,7 +82,7 @@ class TestBuildPtrac:
         assert ptrac["client_info"]["name"] == "Client"
         assert ptrac["client_info"]["tenant_id"] == 0
         assert ptrac["evidence"] == []
-        assert len(ptrac["flaws_array"]) == len({check_key(f) for f in findings})
+        assert len(ptrac["flaws_array"]) == len(reportable_checks(findings))
         # Must be plain JSON
         assert json.loads(json.dumps(ptrac)) == ptrac
 
@@ -114,28 +119,44 @@ class TestBuildPtrac:
     def test_same_check_on_many_resources_is_one_flaw(self, findings):
         base = findings[0]
         group = [
-            variant(base, uid="arn:aws:s3:::bucket-a", message="bucket-a is public"),
-            variant(base, uid="arn:aws:s3:::bucket-b", message="bucket-b is public"),
-            variant(base, uid="arn:aws:s3:::bucket-c", message="bucket-c is public"),
+            variant(
+                base,
+                uid="arn:aws:s3:::bucket-a",
+                message="S3 Bucket arn:aws:s3:::bucket-a is public.",
+            ),
+            variant(
+                base,
+                uid="arn:aws:s3:::bucket-b",
+                message="S3 Bucket arn:aws:s3:::bucket-b is public.",
+            ),
+            variant(
+                base,
+                uid="arn:aws:s3:::bucket-c",
+                message="S3 Bucket arn:aws:s3:::bucket-c is public.",
+            ),
         ]
         ptrac = build(group)
 
         assert len(ptrac["flaws_array"]) == 1
         flaw = ptrac["flaws_array"][0]
-        # Generic check title, not the per-resource message
-        assert flaw["title"] == check_title(base)
+        # Title states the observed failure from the FAIL evidence (resource
+        # identifiers removed), never the expected-state check title
+        assert flaw["title"] == "S3 Bucket is Public"
+        assert flaw["title"] != check_title(base)
         assets = {a["asset"]: a for a in flaw["affected_assets"].values()}
         assert sorted(assets) == [
             "arn:aws:s3:::bucket-a",
             "arn:aws:s3:::bucket-b",
             "arn:aws:s3:::bucket-c",
         ]
-        assert "bucket-b is public" in assets["arn:aws:s3:::bucket-b"]["notes"]
-        assert "<strong>Affected Resources</strong>: 3" in flaw["description"]
+        assert (
+            "S3 Bucket arn:aws:s3:::bucket-b is public." in assets["arn:aws:s3:::bucket-b"]["notes"]
+        )
+        assert "<strong>Failed Resources</strong>: 3" in flaw["description"]
 
     def test_different_checks_stay_separate(self, findings):
         ptrac = build(findings)
-        assert len(ptrac["flaws_array"]) == len({check_key(f) for f in findings})
+        assert len(ptrac["flaws_array"]) == len(reportable_checks(findings))
 
     def test_group_takes_worst_severity_and_merges_references(self, findings):
         base = findings[0]
@@ -171,7 +192,7 @@ class TestBuildPtrac:
         ptrac = build(findings)
         report_assets = ptrac["summary"]["ReportAssets"]
 
-        resources = {f.resource_uid for f in findings}
+        resources = {f.resource_uid for f in findings if prowler_status(f) in ("FAIL", "MANUAL")}
         assert len(report_assets) == len(resources)
 
         for flaw in ptrac["flaws_array"]:
@@ -337,6 +358,9 @@ class TestImportRules:
             item["unmapped"]["CheckTitle"] = f"Check {check}"
             item.pop("finding", None)
             item["resources"][0]["uid"] = f"arn:res:{i}"
+            item["resources"][0]["name"] = f"res{i}"
+            # Prowler evidence (STATUSEXTENDED): FAIL titles are derived from this
+            item["message"] = f"Resource res{i} fails check {check}."
             raw.append(item)
         path = tmp_path / "mixed.ocsf.json"
         path.write_text(json.dumps(raw))
@@ -354,7 +378,7 @@ class TestImportRules:
         rows = [("FAIL", "High", 4, "a"), ("PASS", "High", 4, "b"), ("MANUAL", "Low", 2, "c")]
         for filt in ["all", "fail", "critical-high-medium", "fail-critical-high"]:
             titles = {f["title"] for f in self.export(tmp_path, rows, "--filter", filt)}
-            assert "Check b" not in titles, filt
+            assert "Resource Fails Check B" not in titles, filt
 
     def test_manual_always_imported_whatever_the_filter(self, tmp_path):
         rows = [
@@ -363,7 +387,7 @@ class TestImportRules:
             ("MANUAL", "Low", 2, "man"),
         ]
         titles = {f["title"] for f in self.export(tmp_path, rows, "--filter", "critical")}
-        assert titles == {"Check crit", "MANUAL: Check man"}
+        assert titles == {"Resource Fails Check Crit", "MANUAL: Check man"}
 
     def test_manual_title_prefix_and_tag(self, tmp_path):
         flaws = self.export(tmp_path, [("MANUAL", "Medium", 3, "m")])
@@ -373,9 +397,12 @@ class TestImportRules:
     def test_same_check_many_resources_single_entry(self, tmp_path):
         rows = [("FAIL", "High", 4, "same")] * 4 + [("MANUAL", "Low", 2, "man")] * 3
         flaws = self.export(tmp_path, rows)
-        assert sorted(f["title"] for f in flaws) == ["Check same", "MANUAL: Check man"]
+        assert sorted(f["title"] for f in flaws) == [
+            "MANUAL: Check man",
+            "Resource Fails Check Same",
+        ]
         counts = {f["title"]: len(f["affected_assets"]) for f in flaws}
-        assert counts == {"Check same": 4, "MANUAL: Check man": 3}
+        assert counts == {"Resource Fails Check Same": 4, "MANUAL: Check man": 3}
 
     def test_old_format_without_status_code(self, tmp_path):
         """Older Prowler output: no status_code, result only in unmapped.Status / status."""
@@ -403,15 +430,17 @@ class TestImportRules:
 
         flaws = {f["title"]: f["severity"] for f in json.loads(out.read_text())["flaws_array"]}
         assert flaws == {
-            "Check c": "Critical",
-            "Check h": "High",
-            "Check m": "Medium",
-            "Check l": "Low",
-            "Check i": "Informational",
+            "Resource Fails Check C": "Critical",
+            "Resource Fails Check H": "High",
+            "Resource Fails Check M": "Medium",
+            "Resource Fails Check L": "Low",
+            "Resource Fails Check I": "Informational",
             "MANUAL: Check man": "Medium",
         }
 
     def test_critical_filter_selects_real_prowler_criticals(self, tmp_path):
         rows = [("FAIL", "Critical", 5, "c"), ("FAIL", "Informational", 1, "i")]
         flaws = self.export(tmp_path, rows, "--filter", "critical")
-        assert [(f["title"], f["severity"]) for f in flaws] == [("Check c", "Critical")]
+        assert [(f["title"], f["severity"]) for f in flaws] == [
+            ("Resource Fails Check C", "Critical")
+        ]

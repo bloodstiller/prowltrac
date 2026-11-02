@@ -229,12 +229,34 @@ tagged `manual-check`, with a "Manual check" note at the top of the description.
 filter by title or tag in PlexTrac to work through them, updating each status as you verify it.
 
 **Grouping:** offline exports (`.ptrac` and CSV) produce one finding per Prowler check, not one
-per resource. A check that fails on 40 buckets becomes a single finding, titled with the check
-title (e.g. "Ensure S3 buckets block public access"), with all 40 resources as affected assets.
-Assets are named by resource ID (ARN / resource UID), or by cloud account when a result has no
-resource. Each resource's own Prowler result goes in its affected-asset notes (.ptrac), or in a
-"Details" section of the description (CSV, capped at 200 entries). The group takes the most
-severe severity, and references are merged.
+per resource. A check that fails on 40 buckets becomes a single finding with all 40 FAIL
+resources as affected assets; resources that passed are never included. Assets are named by
+resource ID (ARN / resource UID), or by cloud account when a result has no resource. The group
+takes the most severe severity, and references are merged.
+
+**Titles state the failure, not the control.** A Prowler check title describes the *expected*
+state ("Container Registry public network access is disabled"), so it's never used as a FAIL
+finding's title. The title comes from Prowler's own FAIL evidence (`STATUSEXTENDED` / OCSF
+`message`). Resource, subscription, account and region identifiers are removed, so the failing
+resources collapse to one statement of what was observed:
+
+| Prowler check title (expected state) | FAIL evidence | Finding title |
+|---|---|---|
+| Container Registry public network access is disabled | Container Registry acr1 from subscription Prod allows unrestricted network access. | Container Registry Allows Unrestricted Network Access |
+| SQL Server uses CMK for TDE | SQL Server sql-01 from subscription Prod does not use a customer-managed key for TDE. | SQL Server Does Not Use a Customer-Managed Key for TDE |
+
+Nothing is negated or inferred from the check title's wording. If no usable statement can be
+derived (for example, empty evidence), the title is `Failed Control: <check title>`, so it
+still can't read as if the secure state were met. Manual checks keep `MANUAL: <control to
+verify>`.
+
+Each description is laid out as: **Security Control Expects** (check title and description),
+**Prowler Observed (FAIL)**, **Why It Matters** (Prowler's risk text), context (provider,
+accounts, regions, compliance, check ID) and **Failed Resources**. Each resource's Prowler
+evidence is kept verbatim: in its affected-asset notes in `.ptrac`, and in the CSV description
+under "Failed resources and Prowler evidence" (capped at 200 entries). The converter doesn't
+judge whether a FAIL is a true positive. Each finding is a candidate for manual validation in
+PlexTrac.
 
 The file format follows PlexTrac-Labs' own
 [JSON → .ptrac converter](https://github.com/PlexTrac-Labs/checkmarx-sca-json-to-ptrac-parser).

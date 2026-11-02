@@ -68,12 +68,13 @@ def _plain_text(parts: List[str]) -> str:
 
 
 def _resource_details(group: GroupedFinding) -> str:
-    """Per-resource Prowler results, since CSV affected assets carry names only."""
+    """Verbatim per-resource Prowler evidence, since CSV affected assets carry names only."""
     lines = [f"{r.name}: {r.detail}" if r.detail else r.name for r in group.resources]
     if len(lines) > MAX_RESOURCE_DETAILS:
         extra = len(lines) - MAX_RESOURCE_DETAILS
         lines = lines[:MAX_RESOURCE_DETAILS] + [f"... and {extra} more"]
-    return "Details: " + "; ".join(_cell(line) for line in lines)
+    label = "Resources to review" if group.manual else "Failed resources and Prowler evidence"
+    return f"{label}: " + "; ".join(_cell(line) for line in lines)
 
 
 def build_csv_rows(findings: List[OCSFFinding]) -> List[List[str]]:

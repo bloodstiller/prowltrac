@@ -5,6 +5,7 @@ Used by both the online importer (API upload) and the offline .ptrac exporter so
 modes produce identical titles, descriptions, recommendations and references.
 """
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -286,27 +287,169 @@ def _check_risk(finding: OCSFFinding) -> Optional[str]:
     return raw.get("risk_details") or _dig(raw, "unmapped", "Risk")
 
 
+def evidence_text(finding: OCSFFinding) -> str:
+    """Prowler's verbatim per-resource result (STATUSEXTENDED), never rewritten."""
+    raw = finding.raw_data or {}
+    return str(
+        finding.message or _dig(raw, "unmapped", "StatusExtended") or raw.get("status_detail") or ""
+    ).strip()
+
+
 def _resource_for(finding: OCSFFinding) -> AffectedResource:
     name = finding.resource_uid or finding.resource_name or asset_name_for(finding)
     return AffectedResource(
         name=str(name or "Unknown resource"),
-        detail=(finding.message or "").strip(),
+        detail=evidence_text(finding),
         resource_type=finding.resource_type,
         region=finding.cloud_region,
         account=asset_name_for(finding),
     )
 
 
-def group_findings(ocsf_findings: List[OCSFFinding]) -> List[GroupedFinding]:
-    """Group OCSF findings by Prowler check: one finding, many affected resources.
+# ---------------------------------------------------------------------------
+# Failure-state titles
+#
+# A Prowler check title states the EXPECTED/secure condition ("... is enabled"), so it
+# must never be used as the title of a FAIL finding. The title is derived instead from
+# Prowler's own FAIL evidence (STATUSEXTENDED): resource-specific identifiers are removed
+# so the failing resources' messages collapse to one statement of what was observed.
+# Nothing is negated or inferred from the check title's wording.
+# ---------------------------------------------------------------------------
 
-    Groups keep first-seen order. Severity is the most severe across the group;
-    references and compliance entries are merged.
+FAILED_CONTROL_PREFIX = "Failed Control: "
+_MAX_TITLE_LEN = 150
+_MIN_TITLE_WORDS = 3
+_SCOPE_WORDS = (
+    r"subscription|account|project|tenant|region|location|resource group|organization"
+    r"|management group|folder|workspace|vault|server|namespace|cluster"
+)
+_CONNECTORS = r"from|in|for|of|on|within|at|under|belonging to"
+_SMALL_WORDS = {
+    "a",
+    "an",
+    "the",
+    "and",
+    "or",
+    "nor",
+    "but",
+    "of",
+    "for",
+    "to",
+    "in",
+    "on",
+    "at",
+    "by",
+    "with",
+    "from",
+    "as",
+    "is",
+    "are",
+    "be",
+    "via",
+    "per",
+    "than",
+    "into",
+}
+
+
+def _identifiers(finding: OCSFFinding) -> List[str]:
+    """Resource-specific strings that vary between affected resources."""
+    raw = finding.raw_data or {}
+    values = [
+        finding.resource_uid,
+        finding.resource_name,
+        finding.cloud_account_uid,
+        _dig(raw, "cloud", "account", "name"),
+        _dig(raw, "cloud", "org", "name"),
+        _dig(raw, "unmapped", "AccountName"),
+        _dig(raw, "unmapped", "ResourceId"),
+    ]
+    for res in raw.get("resources") or []:
+        if isinstance(res, dict):
+            values += [res.get("uid"), res.get("name")]
+    region = finding.cloud_region
+    # Bare region names are only removed when they look like identifiers (eu-west-2),
+    # so words such as "global" in the evidence are left alone.
+    if region and re.search(r"[-\d]", region):
+        values.append(region)
+    cleaned = {str(v).strip() for v in values if v and len(str(v).strip()) >= 3}
+    # Longest first so an ARN is removed before the name it contains
+    return sorted(cleaned, key=len, reverse=True)
+
+
+def failure_statement(finding: OCSFFinding) -> str:
+    """The FAIL evidence with resource-specific identifiers removed (may be '')."""
+    text = evidence_text(finding)
+    if not text:
+        return ""
+    for ident in _identifiers(finding):
+        quoted = rf"[\'\"`]?{re.escape(ident)}[\'\"`]?"
+        # "... from subscription <id>" / "in region <id>" -> drop the whole phrase
+        text = re.sub(
+            rf"\s*\b(?:{_CONNECTORS})\s+(?:the\s+)?(?:{_SCOPE_WORDS})\s+{quoted}",
+            "",
+            text,
+            flags=re.IGNORECASE,
+        )
+        text = re.sub(rf"(?<![\w-]){quoted}(?![\w-])", "", text)
+    text = re.sub(r"\(\s*\)", "", text)
+    text = re.sub(r"\s+([.,;:])", r"\1", text)
+    text = re.sub(r"\s+", " ", text).strip(" .;:,-")
+    return text
+
+
+def _title_word(word: str) -> str:
+    """Capitalise a plain lower-case word; leave acronyms/identifiers (DB, TDE, OFF) as is."""
+    core = word.strip("()[]\"'.,;:")
+    if core[:1].islower() and not any(c.isupper() or c.isdigit() for c in core[1:]):
+        return word.replace(core, core[:1].upper() + core[1:], 1)
+    return word
+
+
+def _title_case(text: str) -> str:
+    out = []
+    for i, word in enumerate(text.split()):
+        core = word.strip("()[]\"'.,;:")
+        if i and core.lower() in _SMALL_WORDS:
+            out.append(word.lower())
+        else:
+            # customer-managed -> Customer-Managed
+            out.append("-".join(_title_word(part) for part in word.split("-")))
+    return " ".join(out)
+
+
+def failure_title(members: List[OCSFFinding]) -> str:
+    """Title stating the failed condition, from the FAIL evidence of the group."""
+    statements = [failure_statement(m) for m in members]
+    counts: Dict[str, int] = {}
+    for st in statements:
+        if st:
+            counts[st] = counts.get(st, 0) + 1
+    if counts:
+        best = max(counts, key=lambda st: (counts[st], -len(st)))
+        if len(best.split()) >= _MIN_TITLE_WORDS and len(best) <= _MAX_TITLE_LEN:
+            return _title_case(best)
+    # No usable evidence: say plainly that the control failed rather than presenting the
+    # expected state as if it were the finding.
+    return f"{FAILED_CONTROL_PREFIX}{check_title(members[0])}"
+
+
+def group_findings(ocsf_findings: List[OCSFFinding]) -> List[GroupedFinding]:
+    """Group Prowler FAIL (and MANUAL) results by check: one finding, many resources.
+
+    - Only FAIL and MANUAL results are used; anything else (e.g. PASS) is ignored here
+      too, so passed resources can never end up as affected assets.
+    - FAIL titles describe the observed failure (see failure_title); MANUAL titles are
+      "MANUAL: <control to verify>".
+    - Each resource keeps its verbatim Prowler evidence.
+    - Groups keep first-seen order; severity is the most severe in the group.
     """
-    # Manual and automated results are never merged into one finding
     groups: Dict[tuple, List[OCSFFinding]] = {}
     for finding in ocsf_findings:
-        groups.setdefault((check_key(finding), is_manual(finding)), []).append(finding)
+        status = prowler_status(finding)
+        if status not in ("FAIL", "MANUAL"):
+            continue
+        groups.setdefault((check_key(finding), status == "MANUAL"), []).append(finding)
 
     result: List[GroupedFinding] = []
     title_owner: Dict[str, tuple] = {}
@@ -316,11 +459,9 @@ def group_findings(ocsf_findings: List[OCSFFinding]) -> List[GroupedFinding]:
         # Rank by severity name, not severity_id, so this holds whatever ID mapping is used
         worst = min(members, key=lambda f: _SEVERITY_RANK.get(f.severity, len(_SEVERITY_RANK)))
 
-        # Manual checks are prefixed so they stand out (and sort together) in PlexTrac.
-        # Two different checks can share a title; keep PlexTrac titles unique.
-        title = check_title(first)
-        if manual:
-            title = f"{MANUAL_PREFIX}{title}"
+        expected = check_title(first)
+        title = f"{MANUAL_PREFIX}{expected}" if manual else failure_title(members)
+        # Different checks can produce the same title; keep PlexTrac titles unique
         if title_owner.setdefault(title, group_id) != group_id:
             title = f"{title} ({key})"
 
@@ -334,13 +475,24 @@ def group_findings(ocsf_findings: List[OCSFFinding]) -> List[GroupedFinding]:
             else:
                 resources[res.name] = res
 
-        parts = [MANUAL_NOTICE] if manual else []
         description = _check_description(first)
-        if description:
-            parts.append(str(description))
+        expectation = expected if not description else f"{expected}. {description}"
+        parts = []
+        if manual:
+            parts.append(MANUAL_NOTICE)
+            parts.append(f"**Control to Verify**: {expectation}")
+        else:
+            parts.append(f"**Security Control Expects**: {expectation}")
+            observed = _unique(failure_statement(m) for m in members)
+            if observed:
+                parts.append(
+                    "**Prowler Observed (FAIL)**: "
+                    + "; ".join(observed)
+                    + " (per-resource evidence below)"
+                )
         risk = _check_risk(first)
         if risk:
-            parts.append(f"**Risk**: {risk}")
+            parts.append(f"**Why It Matters**: {risk}")
         providers = _unique(m.cloud_provider for m in members)
         if providers:
             parts.append(f"**Cloud Provider**: {', '.join(providers)}")
@@ -357,7 +509,8 @@ def group_findings(ocsf_findings: List[OCSFFinding]) -> List[GroupedFinding]:
         if compliance:
             parts.append(f"**Compliance**: {', '.join(compliance)}")
         parts.append(f"**Prowler Check**: {key}")
-        parts.append(f"**Affected Resources**: {len(resources)}")
+        label = "Resources to Review" if manual else "Failed Resources"
+        parts.append(f"**{label}**: {len(resources)}")
 
         recommendation = ""
         for member in members:
