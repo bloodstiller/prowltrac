@@ -39,6 +39,9 @@ from src.auth.auth_handler import AuthHandler
 from src.plextrac_client import PlexTracClient
 from src.filters import FilterEngine
 from src.utils.cloud import asset_label_for_provider
+from src.converter import convert_findings, group_findings, is_manual, prowler_status
+from src.ptrac import build_ptrac, write_ptrac, validate_doc_version
+from src.csv_export import write_csv
 
 
 class ProwlerCLIImporter:
@@ -69,33 +72,39 @@ class ProwlerCLIImporter:
             print(f"❌ Error parsing file {file_path}: {e}")
             return False
     
+    # Severity narrowing per --filter choice (None = every severity)
+    _FILTER_SEVERITIES = {
+        "all": None,
+        "fail": None,
+        "fail-critical-high": None,  # FAIL is always required now, so same as "fail"
+        "critical": {"Critical"},
+        "critical-high": {"Critical", "High"},
+        "critical-high-medium": {"Critical", "High", "Medium"},
+    }
+
     def apply_filter(self, filter_type: str) -> None:
-        """Apply filtering based on type."""
+        """Select what gets imported.
+
+        - Only FAIL and MANUAL results are ever imported; PASS (and anything else) never is.
+        - Every MANUAL result is imported regardless of the filter, so controls needing
+          human verification always reach PlexTrac.
+        - The filter only narrows FAIL results by severity.
+        """
         original_count = len(self.filtered_findings)
-        
-        self.filter_engine.clear_filters()
-        
-        if filter_type == "fail":
-            self.filter_engine.create_from_preset({'filters': {'status': ['FAIL']}})
-        elif filter_type == "critical":
-            self.filter_engine.create_from_preset({'filters': {'severity': ['Critical']}})
-        elif filter_type == "critical-high":
-            self.filter_engine.create_from_preset({'filters': {'severity': ['Critical', 'High']}})
-        elif filter_type == "critical-high-medium":
-            self.filter_engine.create_from_preset({'filters': {'severity': ['Critical', 'High', 'Medium']}})
-        elif filter_type == "fail-critical-high":
-            self.filter_engine.create_from_preset({'filters': {'status': ['FAIL'], 'severity': ['Critical', 'High']}})
-            from src.filters import FilterOperator
-            self.filter_engine.set_operator(FilterOperator.OR)
-        elif filter_type == "all":
-            # No filtering
-            return
-        
-        if filter_type != "all":
-            filter_result = self.filter_engine.apply_filters(self.findings)
-            self.filtered_findings = filter_result.filtered_findings
-        
-        print(f"🔍 Filter '{filter_type}': {len(self.filtered_findings)} findings (was {original_count})")
+        severities = self._FILTER_SEVERITIES.get(filter_type)
+
+        def keep(finding) -> bool:
+            if is_manual(finding):
+                return True
+            if prowler_status(finding) != "FAIL":
+                return False
+            return severities is None or finding.severity in severities
+
+        self.filtered_findings = [f for f in self.findings if keep(f)]
+        manual = sum(1 for f in self.filtered_findings if is_manual(f))
+        print(f"🔍 Filter '{filter_type}': {len(self.filtered_findings)} results "
+              f"({len(self.filtered_findings) - manual} FAIL + {manual} MANUAL; "
+              f"was {original_count}, PASS excluded)")
     
     def connect(self, url: str = None, username: str = None, password: str = None, mfa_token: str = None, token: str = None) -> bool:
         """Connect to PlexTrac."""
@@ -230,58 +239,19 @@ class ProwlerCLIImporter:
             return False
     
     def _convert_findings_to_plextrac(self, ocsf_findings, asset_mapping):
-        """Convert OCSF findings to PlexTrac format (same as menu_import.py)."""
+        """Convert OCSF findings to PlexTrac API Finding objects."""
         from src.api.endpoints import Finding
-        
+
         plextrac_findings = []
-        title_counts = {}
-        
-        for ocsf_finding in ocsf_findings:
-            # Use message as title, ensure uniqueness
-            base_title = ocsf_finding.message or "Security Finding"
-            title = base_title
-            if title in title_counts:
-                title_counts[title] += 1
-                title = f"{base_title} ({ocsf_finding.resource_name or ocsf_finding.class_name or title_counts[title]})"
-            else:
-                title_counts[title] = 1
-            
-            # Build description (same logic as menu)
-            description_parts = []
-            if ocsf_finding.message:
-                description_parts.append(f"**Finding**: {ocsf_finding.message}")
-            if ocsf_finding.resource_name:
-                description_parts.append(f"**Resource**: {ocsf_finding.resource_name}")
-            if ocsf_finding.resource_type:
-                description_parts.append(f"**Resource Type**: {ocsf_finding.resource_type}")
-            if ocsf_finding.cloud_provider:
-                description_parts.append(f"**Cloud Provider**: {ocsf_finding.cloud_provider}")
-            if ocsf_finding.cloud_region:
-                description_parts.append(f"**Region**: {ocsf_finding.cloud_region}")
-            if ocsf_finding.class_name:
-                description_parts.append(f"**Class**: {ocsf_finding.class_name}")
-            if ocsf_finding.category_name:
-                description_parts.append(f"**Category**: {ocsf_finding.category_name}")
-            if ocsf_finding.compliance_frameworks:
-                description_parts.append(f"**Compliance**: {', '.join(ocsf_finding.compliance_frameworks)}")
-            
-            description = "\\n\\n".join(description_parts)
-            
-            # Extract remediation and references (same logic as menu)
-            raw_data = ocsf_finding.raw_data or {}
-            remediation_text = self._extract_remediation(raw_data)
-            references = self._extract_references(raw_data)
-            
-            # Set affected assets
+        for converted in convert_findings(ocsf_findings):
+            ocsf_finding = converted.source
+
             affected_assets = {}
             if ocsf_finding.cloud_account_uid and ocsf_finding.cloud_account_uid in asset_mapping:
                 asset_id = asset_mapping[ocsf_finding.cloud_account_uid]
-                asset_label = asset_label_for_provider(ocsf_finding.cloud_provider)
-                asset_name = f"{asset_label} {ocsf_finding.cloud_account_uid}"
-
                 affected_assets[asset_id] = {
                     "id": asset_id,
-                    "asset": asset_name,
+                    "asset": converted.asset_name,
                     "ports": None,
                     "status": None,
                     "locationUrl": None,
@@ -289,87 +259,18 @@ class ProwlerCLIImporter:
                     "evidence": None,
                     "notes": None
                 }
-            
-            plextrac_finding = Finding(
-                title=title,
-                description=description,
+
+            plextrac_findings.append(Finding(
+                title=converted.title,
+                description="\\n\\n".join(converted.description_parts),
                 severity=ocsf_finding.severity,
                 status="Open",
-                references=references,
+                references=converted.references,
                 affected_assets=affected_assets,
-                recommendation=remediation_text or ""
-            )
-            plextrac_findings.append(plextrac_finding)
-        
+                recommendation=converted.recommendation
+            ))
+
         return plextrac_findings
-    
-    def _extract_remediation(self, raw_data):
-        """Extract clean remediation text from raw data."""
-        remediation_fields = ['remediation', 'recommendation', 'fix', 'solution', 'mitigation']
-        
-        for field in remediation_fields:
-            if field in raw_data and raw_data[field]:
-                raw_rec = raw_data[field]
-                if isinstance(raw_rec, dict):
-                    return (raw_rec.get('desc') or 
-                           raw_rec.get('text') or 
-                           raw_rec.get('description') or 
-                           raw_rec.get('details'))
-                elif isinstance(raw_rec, list):
-                    return '. '.join(str(item) for item in raw_rec if item)
-                else:
-                    return str(raw_rec)
-        
-        # Check unmapped section
-        unmapped = raw_data.get('unmapped', {})
-        for field in ['Remediation', 'Recommendation', 'Fix', 'Solution']:
-            if field in unmapped and unmapped[field]:
-                raw_rec = unmapped[field]
-                if isinstance(raw_rec, dict):
-                    return (raw_rec.get('desc') or
-                           raw_rec.get('text') or 
-                           raw_rec.get('description'))
-                else:
-                    return str(raw_rec)
-        
-        return ""
-    
-    def _extract_references(self, raw_data):
-        """Extract clean reference URLs from raw data."""
-        references = []
-        ref_fields = ['references', 'links', 'urls', 'external_links']
-        
-        for field in ref_fields:
-            if field in raw_data:
-                refs = raw_data[field]
-                if isinstance(refs, list):
-                    for ref in refs:
-                        if isinstance(ref, dict):
-                            url = ref.get('url') or ref.get('link') or ref.get('href')
-                            if url:
-                                references.append(str(url))
-                        elif isinstance(ref, str) and ('http' in ref or 'www.' in ref):
-                            references.append(ref)
-                elif isinstance(refs, str) and ('http' in refs or 'www.' in refs):
-                    references.append(refs)
-        
-        # Check unmapped for references
-        unmapped = raw_data.get('unmapped', {})
-        for field in ['References', 'Links', 'URLs', 'External_Links']:
-            if field in unmapped:
-                refs = unmapped[field]
-                if isinstance(refs, list):
-                    for ref in refs:
-                        if isinstance(ref, dict):
-                            url = ref.get('url') or ref.get('link') or ref.get('href')
-                            if url:
-                                references.append(str(url))
-                        elif isinstance(ref, str) and ('http' in ref or 'www.' in ref):
-                            references.append(ref)
-                elif isinstance(refs, str) and ('http' in refs or 'www.' in refs):
-                    references.append(refs)
-        
-        return list(set(ref for ref in references if ref and ref.strip()))
 
 
 def select_client(clients: List) -> Optional[str]:
@@ -444,24 +345,37 @@ def select_report(importer, client_id: str, client_name: str, report_name: str =
         return None
 
 
+def _output_path(raw: str, suffix: str, force: bool) -> Path:
+    """Resolve an offline output path, appending the suffix and refusing to overwrite."""
+    path = Path(raw)
+    if path.suffix.lower() != suffix:
+        path = path.with_name(path.name + suffix)
+    if path.exists() and not force:
+        print(f"❌ Output file already exists: {path} (use --force to overwrite)")
+        sys.exit(1)
+    return path
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Import Prowler OCSF findings to PlexTrac',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Filter Options:
-  all                   Import all findings
-  fail                  Import only FAIL findings 
-  critical              Import only Critical severity
-  critical-high         Import Critical and High severity
-  critical-high-medium  Import Critical, High, and Medium severity
-  fail-critical-high    Import FAIL findings OR Critical/High severity
+Filter Options (PASS results are never imported; every MANUAL check always is):
+  fail / all            Import all FAIL findings
+  critical              Import Critical FAIL findings
+  critical-high         Import Critical and High FAIL findings
+  critical-high-medium  Import Critical, High and Medium FAIL findings
+  fail-critical-high    Same as fail (kept for compatibility)
 
 Examples:
   %(prog)s prowler-findings.ocsf.json
   %(prog)s prowler-findings.ocsf.json --filter fail --client-id 123
   %(prog)s prowler-findings.ocsf.json --filter critical-high --report-name "Security Review"
   %(prog)s prowler-findings.ocsf.json --debug --url https://myapp.plextrac.com
+  %(prog)s prowler-findings.ocsf.json --url https://plextrac.internal --ca-bundle internal-ca.pem
+  %(prog)s prowler-findings.ocsf.json --ptrac findings.ptrac --plextrac-version 2.10.1   (offline)
+  %(prog)s prowler-findings.ocsf.json --csv findings.csv   (offline)
         """
     )
     
@@ -474,6 +388,15 @@ Examples:
     parser.add_argument('--password', help='PlexTrac password')
     parser.add_argument('--mfa-token', help='MFA token')
     parser.add_argument('--token', help='PlexTrac API bearer token (takes precedence over --username/--password)')
+    parser.add_argument('--ca-bundle', help='CA bundle (PEM) used to verify the PlexTrac TLS certificate (self-hosted/internal CA)')
+    parser.add_argument('--insecure', action='store_true', help='Disable TLS certificate verification (self-signed certificates; use with care)')
+    
+    # Offline export options
+    parser.add_argument('--ptrac', metavar='FILE', help='Offline mode: write findings to a .ptrac file for manual upload instead of connecting to PlexTrac')
+    parser.add_argument('--plextrac-version', metavar='X.Y.Z', help='Version of the PlexTrac instance the .ptrac will be uploaded to (Account Admin page, bottom right). Required with --ptrac; or set PLEXTRAC_APP_VERSION')
+    parser.add_argument('--client-name', help='Client name stored in the .ptrac (used by Reports > Import Report)')
+    parser.add_argument('--csv', metavar='FILE', help='Offline mode: write findings to a PlexTrac findings CSV (Add Findings > CSV) instead of connecting to PlexTrac')
+    parser.add_argument('--force', action='store_true', help='Overwrite existing --ptrac/--csv output files')
     
     # Import options
     parser.add_argument('--client-id', help='PlexTrac client ID (skip selection)')
@@ -484,7 +407,7 @@ Examples:
     parser.add_argument('--filter', 
                        choices=['all', 'fail', 'critical', 'critical-high', 'critical-high-medium', 'fail-critical-high'],
                        default='fail',
-                       help='Filter findings to import (default: fail)')
+                       help='Narrow FAIL results by severity (default: fail). PASS results are never imported; MANUAL checks always are')
     
     # Debug options
     parser.add_argument('--debug', action='store_true', help='Enable enhanced debug logging for API requests')
@@ -497,11 +420,35 @@ Examples:
         print(f"❌ File not found: {args.ocsf_file}")
         sys.exit(1)
     
+    # Validate offline export options up front, before any parsing work
+    ptrac_path = None
+    ptrac_version = None
+    if args.ptrac:
+        ptrac_version = args.plextrac_version or os.getenv("PLEXTRAC_APP_VERSION")
+        if not validate_doc_version(ptrac_version):
+            print("❌ --ptrac needs the target PlexTrac version as X.Y.Z via --plextrac-version "
+                  "or PLEXTRAC_APP_VERSION.")
+            print("   Find it at the bottom right of the Account Admin page in PlexTrac.")
+            sys.exit(1)
+        ptrac_path = _output_path(args.ptrac, ".ptrac", args.force)
+    csv_path = _output_path(args.csv, ".csv", args.force) if args.csv else None
+    
     print("🚀 Prowler OCSF to PlexTrac Importer (Enhanced CLI)")
     print("=" * 50)
     
     if args.debug:
         print("🔍 Debug mode enabled - enhanced request logging active")
+    
+    # TLS options must be applied before the AuthHandler builds its session
+    config = get_config()
+    if args.ca_bundle:
+        if not Path(args.ca_bundle).is_file():
+            print(f"❌ CA bundle not found: {args.ca_bundle}")
+            sys.exit(1)
+        config.plextrac.ca_bundle = args.ca_bundle
+    if args.insecure:
+        config.plextrac.verify_ssl = False
+        print("⚠️  TLS certificate verification disabled (--insecure)")
     
     # Initialize importer
     importer = ProwlerCLIImporter(debug_requests=args.debug)
@@ -536,6 +483,38 @@ Examples:
     if not importer.filtered_findings:
         print("❌ No findings to import after filtering")
         sys.exit(1)
+    
+    # Offline mode: write file(s) and stop - no auth, no network
+    if ptrac_path or csv_path:
+        if ptrac_path:
+            report_name = args.report_name or f"Prowler Import {datetime.now():%Y-%m-%d}"
+            client_name = args.client_name or "Prowler Import"
+            ptrac = build_ptrac(
+                importer.filtered_findings,
+                report_name=report_name,
+                client_name=client_name,
+                doc_version=ptrac_version,
+            )
+            write_ptrac(ptrac, ptrac_path)
+            print(f"\n💾 Wrote {ptrac_path}")
+            print(f"   Report: {report_name}")
+            print(f"   Findings: {len(ptrac['flaws_array'])} "
+                  f"(from {len(importer.filtered_findings)} Prowler results, grouped by check)")
+            print(f"   Assets: {len(ptrac['summary']['ReportAssets'])}")
+            print(f"   PlexTrac version: {ptrac_version}")
+            print("   📤 Upload, either:")
+            print("   • Existing report: Findings tab → Add findings → File Imports → "
+                  "Import source 'PlexTrac' → select the file")
+            print("   • New report: Reports → Import Report → choose client → drop the file")
+        if csv_path:
+            write_csv(importer.filtered_findings, csv_path)
+            groups = group_findings(importer.filtered_findings)
+            print(f"\n💾 Wrote {csv_path}")
+            print(f"   Findings: {len(groups)} "
+                  f"(from {len(importer.filtered_findings)} Prowler results, grouped by check)")
+            print("   📤 Upload: report Findings tab → Add Findings → 'CSV' → choose file → "
+                  "Continue → Upload")
+        return
     
     # Connect to PlexTrac
     print("\n🔐 Connecting to PlexTrac...")

@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
 import requests
+import urllib3
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -47,14 +48,29 @@ class AuthHandler:
 
         # HTTP session with retry strategy
         self.session = requests.Session()
+        # Connection/TLS failures are not retried: a refused or reset handshake
+        # won't fix itself within seconds, and retrying just delays the real error.
         retry_strategy = Retry(
             total=3,
+            connect=0,
             backoff_factor=1,
             status_forcelist=[429, 500, 502, 503, 504],
         )
         adapter = HTTPAdapter(max_retries=retry_strategy)
         self.session.mount("http://", adapter)
         self.session.mount("https://", adapter)
+
+        # TLS verification: a CA bundle path takes precedence over the boolean flag
+        ca_bundle = getattr(self.config.plextrac, "ca_bundle", None)
+        verify_ssl = getattr(self.config.plextrac, "verify_ssl", True)
+        if ca_bundle:
+            self.session.verify = ca_bundle
+        elif not verify_ssl:
+            # User opt-in (--insecure / PLEXTRAC_VERIFY_SSL=false) for self-hosted
+            # instances with self-signed certificates.
+            self.session.verify = False  # nosec B501
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            self.logger.warning("TLS certificate verification is DISABLED for PlexTrac requests")
 
         # Set default timeout
         self.session.request = self._wrap_request(self.session.request)
@@ -378,7 +394,10 @@ class AuthHandler:
 
         self.logger.info("Validating supplied bearer token")
         try:
-            self.user_info = self.get_current_user()
+            self.user_info = self.get_current_user(raise_network_errors=True)
+        except requests.exceptions.RequestException as e:
+            self._clear_token_state()
+            raise AuthenticationError(self._describe_connection_error(e)) from e
         except Exception as e:
             self.logger.debug(f"Token validation request failed: {e}")
             self.user_info = None
@@ -388,11 +407,7 @@ class AuthHandler:
             if "tenant_id" in self.user_info:
                 self.tenant_id = self.user_info["tenant_id"]
         else:
-            self.token = None
-            self.token_expiry = None
-            self.auth_method = None
-            if "Authorization" in self.session.headers:
-                del self.session.headers["Authorization"]
+            self._clear_token_state()
             raise AuthenticationError(
                 "Invalid or expired bearer token. Supply a fresh token via --token or "
                 "PLEXTRAC_API_TOKEN."
@@ -400,6 +415,56 @@ class AuthHandler:
 
         self.logger.info("Successfully authenticated with bearer token")
         return True
+
+    def _clear_token_state(self) -> None:
+        """Reset bearer-token state after a failed validation."""
+        self.token = None
+        self.token_expiry = None
+        self.auth_method = None
+        if "Authorization" in self.session.headers:
+            del self.session.headers["Authorization"]
+
+    def _base_url(self) -> str:
+        """The PlexTrac URL in use: the one authenticated against, else the config's."""
+        return (self.plextrac_url or self.config.plextrac.url).rstrip("/")
+
+    def _describe_connection_error(self, error: Exception) -> str:
+        """Turn a requests network exception into an actionable message.
+
+        These errors mean the server was never reached at the HTTP level, so they
+        say nothing about whether the token is valid.
+        """
+        base = self._base_url()
+        detail = str(error)
+        network_hint = "This is a network/TLS problem, not a token problem."
+
+        if isinstance(error, requests.exceptions.SSLError):
+            if "CERTIFICATE_VERIFY_FAILED" in detail or "certificate" in detail.lower():
+                return (
+                    f"TLS certificate verification failed for {base}. {network_hint} "
+                    "If the instance uses an internal CA or self-signed certificate, pass "
+                    "--ca-bundle /path/to/ca.pem (or PLEXTRAC_CA_BUNDLE), or --insecure "
+                    f"(PLEXTRAC_VERIFY_SSL=false) to skip verification. Underlying error: {detail}"
+                )
+            return (
+                f"TLS handshake with {base} failed: the server closed the connection. "
+                f"{network_hint} Check the URL and port point at the PlexTrac HTTPS listener "
+                "and that this host is allowed through any firewall/VPN. If you are using "
+                "an IP address, try the instance's DNS hostname instead: reverse proxies "
+                "often reject TLS connections that carry no SNI hostname. "
+                f"Underlying error: {detail}"
+            )
+        if isinstance(error, requests.exceptions.Timeout):
+            return (
+                f"Timed out connecting to {base}. {network_hint} Check the host is reachable "
+                f"from this machine. Underlying error: {detail}"
+            )
+        if isinstance(error, requests.exceptions.ConnectionError):
+            return (
+                f"Could not connect to {base}. {network_hint} Check the URL, port, DNS and "
+                f"network route. Underlying error: {detail}"
+            )
+        return f"Request to {base} failed: {detail}"
 
     def is_authenticated(self) -> bool:
         """Check if currently authenticated with valid token."""
@@ -465,9 +530,9 @@ class AuthHandler:
 
         # Check if endpoint already has API version prefix
         if endpoint.startswith("/api/"):
-            url = f"{self.config.plextrac.url}{endpoint}"
+            url = f"{self._base_url()}{endpoint}"
         else:
-            url = f"{self.config.plextrac.url}/api/{self.config.plextrac.api_version}{endpoint}"
+            url = f"{self._base_url()}/api/{self.config.plextrac.api_version}{endpoint}"
 
         try:
             # Make the request
@@ -504,18 +569,34 @@ class AuthHandler:
             self.logger.error(f"Request failed: {method} {endpoint} - {str(e)}")
             raise
 
-    def get_current_user(self) -> Optional[Dict[str, Any]]:
-        """Get information about the currently authenticated user."""
+    def get_current_user(self, raise_network_errors: bool = False) -> Optional[Dict[str, Any]]:
+        """Get information about the currently authenticated user.
+
+        With raise_network_errors=True, connection/TLS failures propagate as
+        requests exceptions so callers can tell "couldn't connect" apart from
+        "server rejected the token" (which returns None).
+        """
         if not self.is_authenticated():
             return None
 
         try:
             response = self.make_authenticated_request("GET", "/whoami")
+        except requests.exceptions.RequestException as e:
+            if raise_network_errors:
+                raise
+            self.logger.error(f"Error getting user info: {str(e)}")
+            return None
+
+        try:
             if response.status_code == 200:
                 return response.json()
+            if response.status_code in (401, 403):
+                self.logger.warning(
+                    f"Server rejected credentials on /whoami: {response.status_code}"
+                )
             else:
                 self.logger.warning(f"Failed to get user info: {response.status_code}")
-                return None
+            return None
         except Exception as e:
             self.logger.error(f"Error getting user info: {str(e)}")
             return None

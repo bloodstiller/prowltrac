@@ -197,6 +197,69 @@ The tool automatically:
 - Maps findings to their respective assets
 - Handles asset creation failures gracefully
 
+## Offline Export (.ptrac)
+
+If the PlexTrac instance isn't reachable from where you process Prowler output, write a
+`.ptrac` file and upload it yourself. No credentials or network access are needed:
+
+```bash
+python simple_import.py prowler-output.ocsf.json --filter fail \
+  --ptrac findings.ptrac --plextrac-version 2.10.1 \
+  --report-name "AWS Review Nov 2026"
+```
+
+- `--plextrac-version` (or `PLEXTRAC_APP_VERSION`) is **required**: use the version of the
+  instance you'll upload to, shown at the bottom right of the Account Admin page. It's written
+  into every finding, and PlexTrac needs it to accept the import.
+- `--client-name` sets the client stored in the file (default `Prowler Import`).
+- An existing output file is not overwritten unless you pass `--force`.
+
+Upload the file in PlexTrac, either:
+- **into an existing report**: Findings tab → Add findings → File Imports → Import source
+  "PlexTrac" → select the file, or
+- **as a new report**: Reports → Import Report → choose the client → drop the file.
+
+**What gets imported:** only `FAIL` and `MANUAL` results. `PASS` results are never imported,
+not even with `--filter all`. `--filter` only narrows `FAIL` results by severity.
+
+**Manual checks:** Prowler reports controls it can't evaluate automatically with status
+`MANUAL`. Every one is always imported, whatever the filter. Their titles get the prefix
+`MANUAL: ` (e.g. "MANUAL: Ensure security contact details are registered"), and they're
+tagged `manual-check`, with a "Manual check" note at the top of the description. Sort or
+filter by title or tag in PlexTrac to work through them, updating each status as you verify it.
+
+**Grouping:** offline exports (`.ptrac` and CSV) produce one finding per Prowler check, not one
+per resource. A check that fails on 40 buckets becomes a single finding, titled with the check
+title (e.g. "Ensure S3 buckets block public access"), with all 40 resources as affected assets.
+Assets are named by resource ID (ARN / resource UID), or by cloud account when a result has no
+resource. Each resource's own Prowler result goes in its affected-asset notes (.ptrac), or in a
+"Details" section of the description (CSV, capped at 200 entries). The group takes the most
+severe severity, and references are merged.
+
+The file format follows PlexTrac-Labs' own
+[JSON → .ptrac converter](https://github.com/PlexTrac-Labs/checkmarx-sca-json-to-ptrac-parser).
+
+### CSV export
+
+You can also write a CSV in PlexTrac's
+[Report Findings CSV Template](https://docs.plextrac.com/plextrac-documentation/product-documentation/reports/findings/csv-findings-templates/using-report-findings-csv-template)
+format. No version flag is needed:
+
+```bash
+python simple_import.py prowler-output.ocsf.json --filter fail --csv findings.csv
+```
+
+Upload it in a report: Findings tab → Add Findings → "CSV" → choose the file → Continue →
+Upload. `--csv` and `--ptrac` can be combined in a single run.
+
+Columns follow the template order (`title, severity, status, description, recommendations,
+references, affected_assets, tags, cvss_temporal, cwe, cve, category`). PlexTrac splits
+`references`, `affected_assets` and `tags` on commas, so commas inside a single value are
+replaced with spaces. The layout matches PlexTrac's `Finding CSV Template v3.2`: same
+header, CRLF line endings, one line per finding (description parts are joined with ` | `). Compared with `.ptrac`, CSV is simpler and doesn't depend on the
+instance version. It carries less per-asset detail, though: affected assets are names only,
+without the per-resource notes.
+
 ## Troubleshooting
 
 ### Authentication Issues
@@ -209,6 +272,26 @@ python simple_import.py file.json --debug
 echo $PLEXTRAC_URL
 echo $PLEXTRAC_USERNAME
 ```
+
+### TLS / Connection Errors (self-hosted instances)
+
+Connection and TLS failures are reported separately from token errors. If you get
+"TLS handshake ... failed: the server closed the connection":
+
+- Check the URL and port point at the PlexTrac HTTPS listener, and that this machine can reach it
+  (`curl -vk https://<host>/api/v2/whoami` should get an HTTP response, even a 401).
+- Use the instance's DNS hostname rather than its IP: reverse proxies often drop TLS connections
+  that carry no SNI hostname, which is what clients send for raw IPs.
+
+If the certificate is self-signed or issued by an internal CA:
+
+```bash
+python simple_import.py file.json --url https://plextrac.internal --ca-bundle internal-ca.pem
+python simple_import.py file.json --url https://plextrac.internal --insecure   # skip verification
+```
+
+The same settings are available as `PLEXTRAC_CA_BUNDLE` / `PLEXTRAC_VERIFY_SSL=false` or
+`plextrac.ca_bundle` / `plextrac.verify_ssl` in `config.yaml`.
 
 ### No Findings After Filtering
 

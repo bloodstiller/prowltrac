@@ -79,25 +79,12 @@ class SeverityFilter(FindingFilter):
     def __init__(self, severities: List[str]):
         super().__init__("severity")
         self.severities = [s.lower() for s in severities]
-        self.severity_ids = []
-
-        # Map severity names to IDs (match config mapping)
-        severity_map = {"critical": 1, "high": 2, "medium": 3, "low": 4, "informational": 5}
-        for sev in self.severities:
-            if sev in severity_map:
-                self.severity_ids.append(severity_map[sev])
-
-        # Debug logging
-        self.logger.debug(
-            f"SeverityFilter: severities={self.severities}, mapped_ids={self.severity_ids}"
-        )
+        self.logger.debug(f"SeverityFilter: severities={self.severities}")
 
     def apply(self, findings: List[OCSFFinding]) -> List[OCSFFinding]:
-        # Debug: Show what severity IDs we're actually finding
-        actual_severity_ids = set(f.severity_id for f in findings[:10])
-        self.logger.debug(f"SeverityFilter: sample actual severity_ids={actual_severity_ids}")
-
-        filtered = [f for f in findings if f.severity_id in self.severity_ids]
+        # Match on the resolved PlexTrac severity name (the parser has already mapped
+        # OCSF severity_id), so this can't drift from the configured mapping.
+        filtered = [f for f in findings if (f.severity or "").lower() in self.severities]
         self.logger.debug(f"SeverityFilter: {len(findings)} -> {len(filtered)} findings")
         return filtered
 
@@ -330,8 +317,8 @@ class FilterEngine:
         return {
             "total_removed": len(original) - len(filtered),
             "percent_retained": round((len(filtered) / len(original)) * 100, 1) if original else 0,
-            "critical_retained": sum(1 for f in filtered if f.severity_id == 1),
-            "high_retained": sum(1 for f in filtered if f.severity_id == 2),
+            "critical_retained": sum(1 for f in filtered if f.severity == "Critical"),
+            "high_retained": sum(1 for f in filtered if f.severity == "High"),
             "failed_retained": sum(1 for f in filtered if f.status == "Failed"),
         }
 

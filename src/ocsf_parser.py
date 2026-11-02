@@ -20,6 +20,18 @@ except ImportError:
     HAS_OCSF_MODELS = False
 
 
+# OCSF / Prowler severity names -> PlexTrac severities (used when severity_id is unmapped)
+_SEVERITY_TEXT = {
+    "critical": "Critical",
+    "fatal": "Critical",
+    "high": "High",
+    "medium": "Medium",
+    "low": "Low",
+    "informational": "Informational",
+    "info": "Informational",
+}
+
+
 @dataclass
 class OCSFFinding:
     """Represents a parsed OCSF finding."""
@@ -68,12 +80,12 @@ class OCSFFinding:
     @property
     def is_critical(self) -> bool:
         """Check if this is a critical finding."""
-        return self.severity_id == 1
+        return self.severity == "Critical"
 
     @property
     def is_high_severity(self) -> bool:
         """Check if this is high severity or above."""
-        return self.severity_id <= 2
+        return self.severity in ("Critical", "High")
 
     def has_compliance_framework(self, framework: str) -> bool:
         """Check if finding relates to a specific compliance framework."""
@@ -148,6 +160,19 @@ class OCSFParser:
         except Exception as e:
             raise ValueError(f"Error parsing OCSF file: {str(e)}")
 
+    def _resolve_severity(self, severity_id: Any, severity_text: Any) -> str:
+        """PlexTrac severity for an OCSF finding.
+
+        severity_id is mapped with config.mapping.severity (OCSF scale: 5 = Critical ...
+        1 = Informational). IDs outside the mapping (0 Unknown, 99 Other) fall back to the
+        severity text, and finally to Informational.
+        """
+        mapped = self._severity_map.get(severity_id)
+        if mapped:
+            return mapped
+        text = str(severity_text or "").strip().lower()
+        return _SEVERITY_TEXT.get(text, "Informational")
+
     def _parse_finding(self, data: Dict[str, Any]) -> Optional[OCSFFinding]:
         """Parse a single OCSF finding."""
         # Validate finding structure
@@ -158,9 +183,8 @@ class OCSFParser:
 
         # Extract core fields
         message = data.get("message", "")
-        severity_id = data.get("severity_id", 4)
-        # Always use our mapping based on severity_id, not the text from JSON
-        severity = self._severity_map.get(severity_id, "Low")
+        severity_id = data.get("severity_id", 0)
+        severity = self._resolve_severity(severity_id, data.get("severity"))
         status = data.get("status", "Unknown")
         status_id = data.get("status_id", 0)
         status_code = data.get("status_code")

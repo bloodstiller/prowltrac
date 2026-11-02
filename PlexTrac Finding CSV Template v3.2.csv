@@ -1,0 +1,2 @@
+title,severity,status,description,recommendations,references,affected_assets,tags,cvss_temporal,cwe,cve,category
+Web Server Vulnerability,Medium,Open,"The web server is made of wood and vulnerable to a ""termite"" attack.",Make the server out of stone. ,"www.plextrac.com,  AA22-321A : #StopRansomware: Hive Ransomware, AA22-138A : Threat Actors Exploiting F5 BIG-IP CVE-2022-1388","https://10.43.135.237,https://8.8.8.8","Karbo, Turbo",5.5,CWE-772,CVE-2014-3127,Potential Vulnerability

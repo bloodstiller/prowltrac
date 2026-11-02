@@ -22,7 +22,7 @@ class TestOCSFParser:
         # Sample OCSF finding data
         self.sample_finding = {
             "message": "S3 bucket is publicly readable",
-            "severity_id": 2,
+            "severity_id": 4,
             "severity": "High",
             "status": "Failed",
             "status_id": 1,
@@ -59,7 +59,7 @@ class TestOCSFParser:
 
             assert isinstance(finding, OCSFFinding)
             assert finding.message == "S3 bucket is publicly readable"
-            assert finding.severity_id == 2
+            assert finding.severity_id == 4
             assert finding.severity == "High"
             assert finding.status == "Failed"
             assert finding.cloud_account_uid == "123456789012"
@@ -76,7 +76,7 @@ class TestOCSFParser:
         """Test parsing multiple OCSF findings."""
         findings_data = [self.sample_finding, self.sample_finding.copy()]
         findings_data[1]["message"] = "Different finding"
-        findings_data[1]["severity_id"] = 1
+        findings_data[1]["severity_id"] = 5
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump(findings_data, f)
@@ -88,7 +88,8 @@ class TestOCSFParser:
             assert len(findings) == 2
             assert findings[0].message == "S3 bucket is publicly readable"
             assert findings[1].message == "Different finding"
-            assert findings[1].severity_id == 1
+            assert findings[1].severity_id == 5
+            assert findings[1].severity == "Critical"
 
         finally:
             temp_path.unlink()
@@ -126,7 +127,7 @@ class TestOCSFParser:
         """Test OCSFFinding property methods."""
         finding = OCSFFinding(
             message="Test finding",
-            severity_id=1,
+            severity_id=5,
             severity="Critical",
             status="Failed",
             status_id=1,
@@ -197,7 +198,7 @@ class TestOCSFFinding:
         """Test OCSFFinding with optional fields."""
         finding = OCSFFinding(
             message="Test message",
-            severity_id=1,
+            severity_id=5,
             severity="Critical",
             status="Failed",
             status_id=1,

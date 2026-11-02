@@ -12,6 +12,10 @@ plextrac:
   request_timeout: 30
   auth_timeout: 60
 
+  # TLS settings for self-hosted instances
+  # verify_ssl: false            # skip certificate verification (or PLEXTRAC_VERIFY_SSL=false / --insecure)
+  # ca_bundle: "/path/to/ca.pem" # internal CA bundle (or PLEXTRAC_CA_BUNDLE / --ca-bundle)
+
 # Authentication & Token Caching
 auth:
   # Enable token caching (default: true)
@@ -53,12 +57,16 @@ import:
 
 # Field Mapping Configuration
 mapping:
-  # OCSF Severity to PlexTrac Severity
+  # OCSF severity_id (as written by Prowler) to PlexTrac Severity.
+  # OCSF scale: 0 Unknown, 1 Informational, 2 Low, 3 Medium, 4 High, 5 Critical, 6 Fatal, 99 Other.
+  # IDs not listed here (0, 99) fall back to the finding's severity text.
   severity:
-    1: "Critical"  # Critical
-    2: "High"      # High
-    3: "Medium"    # Medium
-    4: "Low"       # Low
+    1: "Informational"
+    2: "Low"
+    3: "Medium"
+    4: "High"
+    5: "Critical"
+    6: "Critical"  # Fatal
   
   # OCSF Status to PlexTrac Status
   status:

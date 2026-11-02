@@ -73,12 +73,10 @@ class MenuOCSFParser:
         
         for finding in findings:
             # Use the severity and status from our OCSFFinding objects
-            severity_id = getattr(finding, 'severity_id', 3)
             status_code = getattr(finding, 'status_code', 'UNKNOWN')
             
-            # Map severity using the same mapping as config
-            severity_map = {1: "Critical", 2: "High", 3: "Medium", 4: "Low", 5: "Informational"}
-            severity = severity_map.get(severity_id, "Medium")
+            # The parser has already resolved the PlexTrac severity from the OCSF severity_id
+            severity = getattr(finding, 'severity', None) or "Medium"
             
             if severity in stats['by_severity']:
                 stats['by_severity'][severity] += 1

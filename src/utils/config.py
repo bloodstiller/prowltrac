@@ -18,6 +18,10 @@ class PlexTracConfig(BaseModel):
     api_version: str = Field(default="v2", description="API version")
     request_timeout: int = Field(default=30, description="Request timeout in seconds")
     auth_timeout: int = Field(default=60, description="Authentication timeout in seconds")
+    verify_ssl: bool = Field(default=True, description="Verify the server's TLS certificate")
+    ca_bundle: Optional[str] = Field(
+        default=None, description="Path to a CA bundle used to verify the server certificate"
+    )
 
     @field_validator("url")
     @classmethod
@@ -55,8 +59,18 @@ class MappingConfig(BaseModel):
     """Field mapping configuration."""
 
     severity: Dict[int, str] = Field(
-        default={1: "Critical", 2: "High", 3: "Medium", 4: "Low", 5: "Informational"},
-        description="OCSF severity to PlexTrac severity mapping",
+        # OCSF severity_id scale, as written by Prowler (py-ocsf-models SeverityID):
+        # 0 Unknown, 1 Informational, 2 Low, 3 Medium, 4 High, 5 Critical, 6 Fatal, 99 Other.
+        # 0 and 99 are left out on purpose: the parser falls back to the severity text.
+        default={
+            1: "Informational",
+            2: "Low",
+            3: "Medium",
+            4: "High",
+            5: "Critical",
+            6: "Critical",
+        },
+        description="OCSF severity_id to PlexTrac severity mapping",
     )
     status: Dict[str, str] = Field(
         default={"New": "Open", "Suppressed": "Closed", "Unknown": "Open"},
@@ -124,6 +138,15 @@ class ConfigManager:
         # PlexTrac settings from environment
         if url := os.getenv("PLEXTRAC_URL"):
             config_data["plextrac"]["url"] = url
+        if verify_ssl := os.getenv("PLEXTRAC_VERIFY_SSL"):
+            config_data["plextrac"]["verify_ssl"] = verify_ssl.strip().lower() not in (
+                "false",
+                "0",
+                "no",
+                "off",
+            )
+        if ca_bundle := os.getenv("PLEXTRAC_CA_BUNDLE"):
+            config_data["plextrac"]["ca_bundle"] = ca_bundle
 
         # Set default URL for testing/development if none provided
         if "url" not in config_data["plextrac"]:

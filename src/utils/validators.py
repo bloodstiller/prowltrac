@@ -193,11 +193,11 @@ def validate_finding_data(finding: Dict[str, Any]) -> Dict[str, Any]:
     # Validate severity_id
     if "severity_id" in finding:
         severity_id = finding["severity_id"]
-        if not isinstance(severity_id, int) or severity_id not in [1, 2, 3, 4, 5]:
-            result["errors"].append(f"Invalid severity_id: {severity_id}. Must be 1-5")
-        elif severity_id == 5:
-            # severity_id 5 is often "Informational" - treat as Low (4)
-            result["warnings"].append(f"Severity ID 5 found, treating as Low severity")
+        # OCSF scale: 0 Unknown, 1 Informational ... 5 Critical, 6 Fatal, 99 Other
+        if not isinstance(severity_id, int) or severity_id not in [0, 1, 2, 3, 4, 5, 6, 99]:
+            result["errors"].append(
+                f"Invalid severity_id: {severity_id}. Must be an OCSF value (0-6 or 99)"
+            )
 
     # Validate status
     if "status" in finding:

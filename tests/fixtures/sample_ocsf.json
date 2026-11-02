@@ -53,7 +53,7 @@
       }
     ],
     "severity": "High",
-    "severity_id": 2,
+    "severity_id": 4,
     "start_time": 1703689200000,
     "status": "Failed",
     "status_id": 1,
@@ -147,7 +147,7 @@
       }
     ],
     "severity": "Critical",
-    "severity_id": 1,
+    "severity_id": 5,
     "start_time": 1703689200000,
     "status": "Failed",
     "status_id": 1,

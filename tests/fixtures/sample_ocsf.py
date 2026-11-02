@@ -16,7 +16,7 @@ def get_sample_finding():
             "product": {"name": "Prowler", "vendor_name": "Prowler", "version": "3.0.0"},
         },
         "severity": "High",
-        "severity_id": 2,
+        "severity_id": 4,
         "status": "New",
         "status_id": 1,
         "status_code": "FAIL",
@@ -108,7 +108,7 @@ def get_sample_findings_list():
     critical.update(
         {
             "severity": "Critical",
-            "severity_id": 1,
+            "severity_id": 5,
             "status_code": "FAIL",
             "message": "S3 bucket allows public write access",
         }
@@ -120,7 +120,7 @@ def get_sample_findings_list():
     high_fail.update(
         {
             "severity": "High",
-            "severity_id": 2,
+            "severity_id": 4,
             "status_code": "FAIL",
             "message": "S3 bucket encryption disabled",
         }
@@ -144,7 +144,7 @@ def get_sample_findings_list():
     low_fail.update(
         {
             "severity": "Low",
-            "severity_id": 4,
+            "severity_id": 2,
             "status_code": "FAIL",
             "message": "S3 bucket logging disabled",
         }

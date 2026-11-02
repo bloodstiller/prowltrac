@@ -72,7 +72,7 @@ class TestSeverityFilter:
 
         # Should have 1 Critical finding
         assert len(filtered) == 1
-        assert filtered[0].severity_id == 1
+        assert filtered[0].severity_id == 5  # OCSF: 5 = Critical
         assert filtered[0].severity == "Critical"
 
     def test_critical_high_filter(self):

@@ -147,46 +147,60 @@ class TestConfigurationIntegration:
     """Test configuration system integration."""
 
     def test_severity_mapping_integration(self):
-        """Test that severity mapping from config works correctly."""
+        """Default mapping follows the OCSF severity_id scale Prowler writes."""
         from src.utils.config import get_config
 
-        config = get_config()
-        severity_map = config.mapping.severity
+        severity_map = get_config().mapping.severity
 
-        # Verify the mapping exists and has expected values
-        assert 1 in severity_map  # Critical
-        assert 2 in severity_map  # High
-        assert 3 in severity_map  # Medium
-        assert 4 in severity_map  # Low
-
-        assert severity_map[1] == "Critical"
-        assert severity_map[2] == "High"
+        assert severity_map[5] == "Critical"
+        assert severity_map[4] == "High"
         assert severity_map[3] == "Medium"
-        assert severity_map[4] == "Low"
-
-        # Check if Informational level exists (may or may not be in config)
-        if 5 in severity_map:
-            assert severity_map[5] == "Informational"
+        assert severity_map[2] == "Low"
+        assert severity_map[1] == "Informational"
+        assert severity_map[6] == "Critical"  # Fatal
 
     def test_ocsf_parser_uses_config_mapping(self):
-        """Test that OCSF parser uses config for severity mapping."""
+        """severity_id drives the severity when it's mapped, overriding the text."""
         parser = OCSFParser()
+        finding = parser._parse_finding(
+            {
+                "message": "Test finding",
+                "severity_id": 4,
+                "severity": "Should be ignored",
+                "status": "New",
+                "status_id": 1,
+                "status_code": "FAIL",
+            }
+        )
+        assert finding.severity == "High"
+        assert finding.severity_id == 4
 
-        # Test with a sample finding
-        sample_data = {
-            "message": "Test finding",
-            "severity_id": 2,
-            "severity": "Should be ignored",  # Parser should use severity_id + config
+    @pytest.mark.parametrize(
+        "severity_id, text, expected",
+        [
+            (5, "Critical", "Critical"),
+            (4, "High", "High"),
+            (3, "Medium", "Medium"),
+            (2, "Low", "Low"),
+            (1, "Informational", "Informational"),
+            (6, "Fatal", "Critical"),
+            (99, "High", "High"),  # Other: fall back to text
+            (0, "Unknown", "Informational"),  # Unknown
+            (0, None, "Informational"),
+        ],
+    )
+    def test_real_prowler_severities(self, severity_id, text, expected):
+        """Prowler writes py-ocsf-models SeverityID: 5 = Critical ... 1 = Informational."""
+        data = {
+            "message": "m",
+            "severity_id": severity_id,
             "status": "New",
             "status_id": 1,
             "status_code": "FAIL",
         }
-
-        finding = parser._parse_finding(sample_data)
-
-        # Should use config mapping for severity_id=2 -> "High"
-        assert finding.severity == "High"
-        assert finding.severity_id == 2
+        if text is not None:
+            data["severity"] = text
+        assert OCSFParser()._parse_finding(data).severity == expected
 
 
 class TestErrorHandling:
